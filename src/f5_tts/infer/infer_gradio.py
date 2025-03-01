@@ -69,11 +69,11 @@ def load_e2tts(ckpt_path=str(cached_path("hf://SWivid/E2-TTS/E2TTS_Base/model_12
 
 def load_custom(ckpt_path: str, vocab_path="", model_cfg=None):
     ckpt_path, vocab_path = ckpt_path.strip(), vocab_path.strip()
-    if ckpt_path.startswith("hf://"):
+    if (ckpt_path.startswith("hf://")):
         ckpt_path = str(cached_path(ckpt_path))
-    if vocab_path.startswith("hf://"):
+    if (vocab_path.startswith("hf://")):
         vocab_path = str(cached_path(vocab_path))
-    if model_cfg is None:
+    if (model_cfg is None):
         model_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
     return load_model(DiT, model_cfg, ckpt_path, vocab_file=vocab_path)
 
@@ -189,9 +189,10 @@ with gr.Blocks() as app_credits:
 # Chapter state data structure
 class ChapterState:
     def __init__(self):
+        # Increase to 7 chapters
         self.chapters = [
             {"title": f"Chapter {i+1}", "content": "", "audio": None, "spectrogram": None, "generated": False}
-            for i in range(5)
+            for i in range(7)
         ]
         self.current_chapter = 0
         
@@ -216,6 +217,12 @@ class ChapterState:
         self.chapters[index]["audio"] = audio
         self.chapters[index]["spectrogram"] = spectrogram
         self.chapters[index]["generated"] = True
+        
+    def delete_chapter_audio(self, index):
+        """Delete the audio for a specific chapter"""
+        self.chapters[index]["audio"] = None
+        self.chapters[index]["spectrogram"] = None
+        self.chapters[index]["generated"] = False
 
 # Create chapter state instance
 chapter_state = ChapterState()
@@ -237,14 +244,21 @@ with gr.Blocks() as app_tts:
             gr.Markdown("## Chapter Navigation")
             chapter_buttons = []
             chapter_generate_buttons = []
+            chapter_delete_buttons = []
             
-            # Create buttons for each chapter with their own generate buttons
-            for i in range(5):
+            # Create buttons for each chapter with their own generate and delete buttons
+            for i in range(7):
+                # Chapter button in its own row
                 with gr.Row():
                     btn = gr.Button(f"Chapter {i+1}", variant="secondary", scale=2)
-                    gen_btn = gr.Button(f"Generate Ch. {i+1}", variant="primary", scale=1)
                     chapter_buttons.append(btn)
+                
+                # Generate and Delete buttons exactly side by side in one row
+                with gr.Row():
+                    gen_btn = gr.Button(f"Generate Ch.{i+1}", variant="primary", scale=1)
+                    del_btn = gr.Button(f"Delete Ch.{i+1}", variant="secondary", scale=1)
                     chapter_generate_buttons.append(gen_btn)
+                    chapter_delete_buttons.append(del_btn)
             
             # Add the "Generate All" button
             generate_all_btn = gr.Button("Generate All Chapters", variant="primary")
@@ -267,11 +281,11 @@ with gr.Blocks() as app_tts:
         
     combined_audio_output = gr.Audio(label="All Chapters Combined")
     
-    # Chapter status
+    # Chapter status table without delete action column
     gr.Markdown("## Chapter Status")
     chapter_status = gr.DataFrame(
         headers=["Chapter", "Status", "Length"],
-        value=[[f"Chapter {i+1}", "Not Generated", "0s"] for i in range(5)]
+        value=[[f"Chapter {i+1}", "Not Generated", "0s"] for i in range(7)]
     )
     
     with gr.Accordion("Advanced Settings", open=False):
@@ -292,7 +306,7 @@ with gr.Blocks() as app_tts:
             label="NFE Steps",
             minimum=4,
             maximum=64,
-            value=32,
+            value=34,
             step=2,
             info="Set the number of denoising steps.",
         )
@@ -356,7 +370,7 @@ with gr.Blocks() as app_tts:
         # Generate audio using the global tts model choice
         audio, spectrogram, ref_text_out = infer(
             ref_audio, ref_text, content, tts_model_choice, remove_silence,
-            cross_fade, nfe_steps, speed, show_info=gr.Info
+            cross_fade, nfe_steps, speed, show_info=print
         )
         
         # Update chapter state
@@ -422,6 +436,16 @@ with gr.Blocks() as app_tts:
             
         return status_data
     
+    def delete_chapter_audio(chapter_index):
+        """Delete the audio for a specific chapter"""
+        chapter_state.delete_chapter_audio(chapter_index)
+        
+        # If this is the current chapter, update UI
+        if chapter_state.current_chapter == chapter_index:
+            return None, None, update_status_table()
+        else:
+            return gr.update(), gr.update(), update_status_table()
+    
     def combine_all_chapters():
         """Combine all generated chapter audio into a single file"""
         generated_audios = []
@@ -436,10 +460,10 @@ with gr.Blocks() as app_tts:
                     sample_rate = sr
         
         if not generated_audios:
-            gr.Warning("No generated audio to combine.")
+            gr.Warning("No generated chapters to combine.")
             return None
         
-        # Combine all audio with small silences between chapters
+        # Combine with silences between chapters
         silence_duration = 1.0  # 1 second silence between chapters
         silence_samples = int(silence_duration * sample_rate)
         silence = np.zeros(silence_samples)
@@ -449,11 +473,11 @@ with gr.Blocks() as app_tts:
             combined = np.concatenate([combined, silence, audio])
         
         return (sample_rate, combined)
-
+    
     def clear_combined_audio():
         """Clear the combined audio output"""
         return None
-
+    
     # Wire up the chapter buttons
     for i, btn in enumerate(chapter_buttons):
         btn.click(
@@ -461,6 +485,20 @@ with gr.Blocks() as app_tts:
             inputs=[gr.Number(value=i, visible=False)], 
             outputs=[gen_text_input, chapter_title, audio_output, spectrogram_output]
         )
+    
+    # Update chapter content when text changes
+    gen_text_input.change(
+        update_chapter_content, 
+        inputs=[gen_text_input], 
+        outputs=[]  # Tidak perlu output karena kita hanya menyimpan state
+    )
+    
+    # Tambahkan juga event untuk text input ketika user mengetik
+    gen_text_input.input(
+        update_chapter_content,
+        inputs=[gen_text_input],
+        outputs=[]
+    )
     
     # Wire up the chapter generate buttons
     for i, gen_btn in enumerate(chapter_generate_buttons):
@@ -477,12 +515,14 @@ with gr.Blocks() as app_tts:
             ],
             outputs=[audio_output, spectrogram_output, ref_text_input, chapter_status]
         )
-    
-    # Update chapter content when text changes
-    gen_text_input.change(
-        update_chapter_content, 
-        inputs=[gen_text_input]
-    )
+        
+    # Wire up the chapter delete buttons
+    for i, del_btn in enumerate(chapter_delete_buttons):
+        del_btn.click(
+            delete_chapter_audio,
+            inputs=[gr.Number(value=i, visible=False)],
+            outputs=[audio_output, spectrogram_output, chapter_status]
+        )
     
     # Wire up the "Generate All Chapters" button
     generate_all_btn.click(
@@ -958,45 +998,33 @@ Have a conversation with an AI using your reference voice!
         audio_input_chat.stop_recording(
             process_audio_input,
             inputs=[audio_input_chat, text_input_chat, chatbot_interface, conversation_state],
-            outputs=[chatbot_interface, conversation_state],
+            outputs=[chatbot_interface, conversation_state, text_input_chat],
         ).then(
             generate_audio_response,
             inputs=[chatbot_interface, ref_audio_chat, ref_text_chat, remove_silence_chat],
             outputs=[audio_output_chat, ref_text_chat],
-        ).then(
-            lambda: None,
-            None,
-            audio_input_chat,
         )
 
         # Handle text input
         text_input_chat.submit(
             process_audio_input,
             inputs=[audio_input_chat, text_input_chat, chatbot_interface, conversation_state],
-            outputs=[chatbot_interface, conversation_state],
+            outputs=[chatbot_interface, conversation_state, text_input_chat],
         ).then(
             generate_audio_response,
             inputs=[chatbot_interface, ref_audio_chat, ref_text_chat, remove_silence_chat],
             outputs=[audio_output_chat, ref_text_chat],
-        ).then(
-            lambda: None,
-            None,
-            text_input_chat,
         )
 
         # Handle send button
         send_btn_chat.click(
             process_audio_input,
             inputs=[audio_input_chat, text_input_chat, chatbot_interface, conversation_state],
-            outputs=[chatbot_interface, conversation_state],
+            outputs=[chatbot_interface, conversation_state, text_input_chat],
         ).then(
             generate_audio_response,
             inputs=[chatbot_interface, ref_audio_chat, ref_text_chat, remove_silence_chat],
             outputs=[audio_output_chat, ref_text_chat],
-        ).then(
-            lambda: None,
-            None,
-            text_input_chat,
         )
 
         # Handle clear button
