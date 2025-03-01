@@ -260,8 +260,12 @@ with gr.Blocks() as app_tts:
         spectrogram_output = gr.Image(label="Spectrogram")
     
     with gr.Row():
-        combine_all_btn = gr.Button("Combine All Chapters", variant="secondary")
-        combined_audio_output = gr.Audio(label="All Chapters Combined")
+        with gr.Column(scale=3):
+            combine_all_btn = gr.Button("Combine All Chapters", variant="secondary")
+        with gr.Column(scale=1):
+            clear_combined_btn = gr.Button("Clear Combined Audio", variant="secondary")
+        
+    combined_audio_output = gr.Audio(label="All Chapters Combined")
     
     # Chapter status
     gr.Markdown("## Chapter Status")
@@ -446,6 +450,10 @@ with gr.Blocks() as app_tts:
         
         return (sample_rate, combined)
 
+    def clear_combined_audio():
+        """Clear the combined audio output"""
+        return None
+
     # Wire up the chapter buttons
     for i, btn in enumerate(chapter_buttons):
         btn.click(
@@ -493,6 +501,13 @@ with gr.Blocks() as app_tts:
     # Combine all chapters button
     combine_all_btn.click(
         combine_all_chapters,
+        inputs=[],
+        outputs=[combined_audio_output]
+    )
+
+    # Clear combined audio button
+    clear_combined_btn.click(
+        clear_combined_audio,
         inputs=[],
         outputs=[combined_audio_output]
     )
