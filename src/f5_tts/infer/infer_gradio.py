@@ -4,6 +4,7 @@
 import json
 import re
 import tempfile
+import os
 from collections import OrderedDict
 from importlib.resources import files
 
@@ -184,17 +185,92 @@ with gr.Blocks() as app_credits:
 * [RootingInLoad](https://github.com/RootingInLoad) for initial chunk generation and podcast app exploration
 * [jpgallegoar](https://github.com/jpgallegoar) for multiple speech-type generation & voice chat
 """)
+
+# Chapter state data structure
+class ChapterState:
+    def __init__(self):
+        self.chapters = [
+            {"title": f"Chapter {i+1}", "content": "", "audio": None, "spectrogram": None, "generated": False}
+            for i in range(5)
+        ]
+        self.current_chapter = 0
+        
+    def get_current_chapter(self):
+        return self.chapters[self.current_chapter]
+    
+    def get_chapter(self, index):
+        return self.chapters[index]
+    
+    def set_current_chapter_content(self, content):
+        self.chapters[self.current_chapter]["content"] = content
+        
+    def set_chapter_content(self, index, content):
+        self.chapters[index]["content"] = content
+        
+    def set_current_chapter_audio(self, audio, spectrogram):
+        self.chapters[self.current_chapter]["audio"] = audio
+        self.chapters[self.current_chapter]["spectrogram"] = spectrogram
+        self.chapters[self.current_chapter]["generated"] = True
+        
+    def set_chapter_audio(self, index, audio, spectrogram):
+        self.chapters[index]["audio"] = audio
+        self.chapters[index]["spectrogram"] = spectrogram
+        self.chapters[index]["generated"] = True
+
+# Create chapter state instance
+chapter_state = ChapterState()
+
 with gr.Blocks() as app_tts:
     gr.Markdown("# Batched TTS")
-    ref_audio_input = gr.Audio(label="Reference Audio", type="filepath")
-    gen_text_input = gr.Textbox(label="Text to Generate", lines=10)
-    generate_btn = gr.Button("Synthesize", variant="primary")
-    with gr.Accordion("Advanced Settings", open=False):
+    
+    with gr.Row():
+        ref_audio_input = gr.Audio(label="Reference Audio", type="filepath")
         ref_text_input = gr.Textbox(
             label="Reference Text",
             info="Leave blank to automatically transcribe the reference audio. If you enter text it will override automatic transcription.",
             lines=2,
         )
+    
+    # Chapter navigation and generation
+    with gr.Row():
+        with gr.Column(scale=1):
+            gr.Markdown("## Chapter Navigation")
+            chapter_buttons = []
+            chapter_generate_buttons = []
+            
+            # Create buttons for each chapter with their own generate buttons
+            for i in range(5):
+                with gr.Row():
+                    btn = gr.Button(f"Chapter {i+1}", variant="secondary", scale=2)
+                    gen_btn = gr.Button(f"Generate Ch. {i+1}", variant="primary", scale=1)
+                    chapter_buttons.append(btn)
+                    chapter_generate_buttons.append(gen_btn)
+            
+            # Add the "Generate All" button
+            generate_all_btn = gr.Button("Generate All Chapters", variant="primary")
+    
+        with gr.Column(scale=3):
+            # Chapter content
+            chapter_title = gr.Textbox(label="Chapter Title", value="Chapter 1")
+            gen_text_input = gr.Textbox(label="Text to Generate", lines=15)
+    
+    # Combined audio for all chapters
+    with gr.Row():
+        audio_output = gr.Audio(label="Generated Audio")
+        spectrogram_output = gr.Image(label="Spectrogram")
+    
+    with gr.Row():
+        combine_all_btn = gr.Button("Combine All Chapters", variant="secondary")
+        combined_audio_output = gr.Audio(label="All Chapters Combined")
+    
+    # Chapter status
+    gr.Markdown("## Chapter Status")
+    chapter_status = gr.DataFrame(
+        headers=["Chapter", "Status", "Length"],
+        value=[[f"Chapter {i+1}", "Not Generated", "0s"] for i in range(5)]
+    )
+    
+    with gr.Accordion("Advanced Settings", open=False):
         remove_silence = gr.Checkbox(
             label="Remove Silences",
             info="The model tends to produce silences, especially on longer audio. We can manually remove silences if needed. Note that this is an experimental feature and may produce strange results. This will also increase generation time.",
@@ -225,8 +301,201 @@ with gr.Blocks() as app_tts:
             info="Set the duration of the cross-fade between audio clips.",
         )
 
-    audio_output = gr.Audio(label="Synthesized Audio")
-    spectrogram_output = gr.Image(label="Spectrogram")
+    # Functions for chapter operations
+    def switch_to_chapter(chapter_index):
+        """Switch to a specific chapter"""
+        chapter_state.current_chapter = chapter_index
+        current_chapter = chapter_state.get_current_chapter()
+        
+        # Update UI with chapter data
+        return (
+            current_chapter["content"], 
+            f"Chapter {chapter_index + 1}", 
+            current_chapter["audio"] if current_chapter["generated"] else None,
+            current_chapter["spectrogram"] if current_chapter["generated"] else None
+        )
+    
+    def update_chapter_content(content):
+        """Update the current chapter's content when text changes"""
+        chapter_state.set_current_chapter_content(content)
+        return content
+    
+    def generate_chapter_audio(ref_audio, ref_text, content, remove_silence, 
+                             cross_fade, nfe_steps, speed):
+        """Generate audio for the current chapter"""
+        if not content.strip():
+            gr.Warning("Please enter text for this chapter.")
+            return None, None, ref_text, update_status_table()
+        
+        # Generate audio using the global tts model choice
+        audio, spectrogram, ref_text_out = infer(
+            ref_audio, ref_text, content, tts_model_choice, remove_silence,
+            cross_fade, nfe_steps, speed, show_info=gr.Info
+        )
+        
+        # Update chapter state
+        chapter_state.set_current_chapter_audio(audio, spectrogram)
+        
+        # Update status table
+        return audio, spectrogram, ref_text_out, update_status_table()
+    
+    def generate_specific_chapter(chapter_index, ref_audio, ref_text, remove_silence, 
+                                cross_fade, nfe_steps, speed):
+        """Generate audio for a specific chapter"""
+        chapter = chapter_state.get_chapter(chapter_index)
+        content = chapter["content"]
+        
+        if not content.strip():
+            gr.Warning(f"Please enter text for Chapter {chapter_index+1}.")
+            return None, None, ref_text, update_status_table()
+        
+        # Generate audio using the global tts model choice
+        audio, spectrogram, ref_text_out = infer(
+            ref_audio, ref_text, content, tts_model_choice, remove_silence,
+            cross_fade, nfe_steps, speed, show_info=gr.Info
+        )
+        
+        # Update chapter state
+        chapter_state.set_chapter_audio(chapter_index, audio, spectrogram)
+        
+        # If this is the current chapter, update UI
+        if chapter_state.current_chapter == chapter_index:
+            return audio, spectrogram, ref_text_out, update_status_table()
+        else:
+            return gr.update(), gr.update(), ref_text_out, update_status_table()
+    
+    def generate_all_chapters(ref_audio, ref_text, remove_silence, 
+                            cross_fade, nfe_steps, speed):
+        """Generate audio for all chapters that have content"""
+        if not ref_audio:
+            gr.Warning("Please provide reference audio before generating.")
+            return None, None, ref_text, update_status_table()
+        
+        last_audio = None
+        last_spectrogram = None
+        
+        for i in range(len(chapter_state.chapters)):
+            chapter = chapter_state.get_chapter(i)
+            content = chapter["content"]
+            
+            if content.strip():
+                # Generate audio for this chapter
+                gr.Info(f"Generating Chapter {i+1}...")
+                audio, spectrogram, ref_text = infer(
+                    ref_audio, ref_text, content, tts_model_choice, remove_silence,
+                    cross_fade, nfe_steps, speed, show_info=print
+                )
+                
+                # Update chapter state
+                chapter_state.set_chapter_audio(i, audio, spectrogram)
+                
+                # Remember the last generated audio for display
+                last_audio = audio
+                last_spectrogram = spectrogram
+                
+        # Display the current chapter's audio at the end
+        current_chapter = chapter_state.get_current_chapter()
+        audio_to_display = current_chapter["audio"] if current_chapter["generated"] else last_audio
+        spectrogram_to_display = current_chapter["spectrogram"] if current_chapter["generated"] else last_spectrogram
+        
+        return audio_to_display, spectrogram_to_display, ref_text, update_status_table()
+        
+    def update_status_table():
+        """Update the chapter status table"""
+        status_data = []
+        
+        for i, chapter in enumerate(chapter_state.chapters):
+            status = "Generated" if chapter["generated"] else "Not Generated"
+            
+            # Calculate length if audio is available
+            length = "0s"
+            if chapter["generated"] and chapter["audio"] is not None:
+                sample_rate, audio_data = chapter["audio"]
+                duration_seconds = len(audio_data) / sample_rate
+                length = f"{duration_seconds:.1f}s"
+                
+            status_data.append([f"Chapter {i+1}", status, length])
+            
+        return status_data
+    
+    def combine_all_chapters():
+        """Combine all generated chapter audio into a single file"""
+        generated_audios = []
+        sample_rate = None
+        
+        # Collect all generated audio
+        for chapter in chapter_state.chapters:
+            if chapter["generated"] and chapter["audio"] is not None:
+                sr, audio_data = chapter["audio"]
+                generated_audios.append(audio_data)
+                if sample_rate is None:
+                    sample_rate = sr
+        
+        if not generated_audios:
+            gr.Warning("No generated audio to combine.")
+            return None
+        
+        # Combine all audio with small silences between chapters
+        silence_duration = 1.0  # 1 second silence between chapters
+        silence_samples = int(silence_duration * sample_rate)
+        silence = np.zeros(silence_samples)
+        
+        combined = generated_audios[0]
+        for audio in generated_audios[1:]:
+            combined = np.concatenate([combined, silence, audio])
+        
+        return (sample_rate, combined)
+
+    # Wire up the chapter buttons
+    for i, btn in enumerate(chapter_buttons):
+        btn.click(
+            switch_to_chapter, 
+            inputs=[gr.Number(value=i, visible=False)], 
+            outputs=[gen_text_input, chapter_title, audio_output, spectrogram_output]
+        )
+    
+    # Wire up the chapter generate buttons
+    for i, gen_btn in enumerate(chapter_generate_buttons):
+        gen_btn.click(
+            generate_specific_chapter,
+            inputs=[
+                gr.Number(value=i, visible=False),
+                ref_audio_input,
+                ref_text_input,
+                remove_silence,
+                cross_fade_duration_slider,
+                nfe_slider,
+                speed_slider
+            ],
+            outputs=[audio_output, spectrogram_output, ref_text_input, chapter_status]
+        )
+    
+    # Update chapter content when text changes
+    gen_text_input.change(
+        update_chapter_content, 
+        inputs=[gen_text_input]
+    )
+    
+    # Wire up the "Generate All Chapters" button
+    generate_all_btn.click(
+        generate_all_chapters,
+        inputs=[
+            ref_audio_input,
+            ref_text_input,
+            remove_silence,
+            cross_fade_duration_slider,
+            nfe_slider,
+            speed_slider
+        ],
+        outputs=[audio_output, spectrogram_output, ref_text_input, chapter_status]
+    )
+    
+    # Combine all chapters button
+    combine_all_btn.click(
+        combine_all_chapters,
+        inputs=[],
+        outputs=[combined_audio_output]
+    )
 
     @gpu_decorator
     def basic_tts(
@@ -249,21 +518,6 @@ with gr.Blocks() as app_tts:
             speed=speed_slider,
         )
         return audio_out, spectrogram_path, ref_text_out
-
-    generate_btn.click(
-        basic_tts,
-        inputs=[
-            ref_audio_input,
-            ref_text_input,
-            gen_text_input,
-            remove_silence,
-            cross_fade_duration_slider,
-            nfe_slider,
-            speed_slider,
-        ],
-        outputs=[audio_output, spectrogram_output, ref_text_input],
-    )
-
 
 def parse_speechtypes_text(gen_text):
     # Pattern to find {speechtype}
